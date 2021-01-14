@@ -1,0 +1,157 @@
+!@encoding CP1252
+model ModelName
+uses "mmxprs" !gain access to the Xpress-Optimizer solver
+uses "mmsystem","mmsvg"
+
+!optional parameters section
+
+parameters
+	Vt=7 !n turbines
+	Vs=2  !n steiner nodes per poter evitare ostacoli
+	Vo=2  !n substation
+	ncabletype=5 !n tipi di cavo
+
+	C=10000000 !n max cable that can enter in substation
+
+end-parameters
+
+
+
+declarations
+
+	P:array(1..Vt+Vs+Vo) of real !power producion
+	T:array(1..ncabletype) of integer !type of cables
+
+	c:array(1..Vt+Vs+Vo,1..Vt+Vs+Vo,1..ncabletype) of real !costo dei cavi per ogni tipo
+
+	u:array(1..ncabletype) of real !array con costo dei cavi per unita di lunghezza
+	k:array(1..ncabletype) of real !max capacità per tipo filo
+
+	f:array(1..Vt+Vs+Vo,1..Vt+Vs+Vo)of mpvar
+
+	Vx:array(1..Vt+Vs+Vo) of real !posizione x
+	Vy:array(1..Vt+Vs+Vo) of real !posizione y
+
+	x:array(1..Vt+Vs+Vo,1..Vt+Vs+Vo,1..ncabletype) of mpvar !if arc i,j costruito con materiale tipo
+	y:array(1..Vt+Vs+Vo,1..Vt+Vs+Vo) of mpvar  !arco i,j costruito
+
+	I=1..Vt+Vs+Vo !andata
+	J=1..Vt+Vs+Vo !ritorno
+
+	numeroNodi=1..Vt+Vs+Vo
+	numeroNodi2=1..Vt+Vs+Vo
+	nbt=1..ncabletype
+
+
+ mincost:linctr !obj.function min the total cable layout cost
+
+end-declarations
+
+!dowload data from file
+ initializations from 'data.dat'
+  Vx Vy u k P
+ end-initializations
+
+!determina il costo per ogni possibile connessione
+forall (i in I, j in J, t in nbt) c(i,j,t):=u(t)*sqrt((Vx(i)-Vx(j))^2+(Vy(i)-Vy(j))^2) !calcola costo tutti tratti e tutti i cavi
+
+
+!funzioni usate per determinare se due set di punti si incrociano
+function onSegment(px:real,py:real,qx:real,qy:real,rx:real,ry:real) :  boolean
+  if (qx <= maxlist(px, rx) and qx >= minlist(px, rx) and qy <= maxlist(py, ry) and qy >= minlist(py, ry)) then returned := true
+  else returned:= false
+  end-if
+end-function
+
+function orientation(px:real,py:real,qx:real,qy:real,rx:real,ry:real) :  real
+ declarations
+   x: real
+ end-declarations
+
+ x:=(qy - py) * (rx - qx) - (qx - px) * (ry - qy)
+
+    if (x = 0) then returned:= 0
+    end-if
+    if (x>0) then returned:=1
+    else returned:=2
+    end-if
+ end-function
+
+ function doIntersect(px:real,py:real,qx:real,qy:real,ppx:real,ppy:real, qqx:real,qqy:real) :  boolean
+ declarations
+   x1: real
+   x2: real
+   x3: real
+   x4: real
+ end-declarations
+
+ x1:=orientation(px,py,qx,qy,ppx,ppy)
+ x2:=orientation(px,py,qx,qy,qqx,qqy)
+ x3:=orientation(ppx,ppy,qqx,qqy,px,py)
+ x4:=orientation(ppx,ppy,qqx,qqy,qx,qy)
+
+ if (x1<>x2 and x3<>x4) then returned:=true
+ elif (x1=0 and onSegment(px,py,ppx,ppy,qx,qy)) then returned:=true
+ elif (x2=0 and onSegment(px,py,qqx,qqy,qx,qy)) then returned:=true
+ elif (x3=0 and onSegment(ppx,ppy,px,py,qqx,qqy)) then returned:=true
+ elif (x4=0 and onSegment(ppx,ppy,qx,qy,qqx,qqy)) then returned:=true
+ else
+ returned:=false
+ end-if
+ end-function
+
+mincost := sum(i in I, j in J, t in nbt) c(i,j,t)*x(i,j,t) !minimizzare il costo di dove porre
+
+
+
+!vincoli
+
+forall(i in I, j in J)         sum(t in nbt)             x(i,j,t) = y(i,j)      !only one type for each arc
+forall(h in 1..Vt+Vs)          sum(w in 1..Vt+Vs+Vo)     (f(h,w)-f(w,h)) = P(h) !flow conservation                                   Vt u Vs    numeronodi=V
+forall(i in I, j in J)         sum(t in nbt)             k(t)*x(i,j,t)>=f(i,j)  !not over capacity cable
+forall(h in 1..Vt)             sum(j in numeroNodi|j<>h) y(h,j)=1               !one cable can exit turbine                             Vt
+forall(h in Vt+Vs+1..Vt+Vs+Vo) sum(j in numeroNodi|j<>h) y(h,j)=0               !none can exit substation                               Vo
+forall(h in Vt+1..Vt+Vs)       sum(j in numeroNodi|j<>h) y(h,j)<=1              !1 cable can exit steiner node                         Vs
+forall(h in Vt+1..Vt+Vs)       sum(i in numeroNodi|i<>h) y(i,h)<=1              !steiner can be connect by only one                    Vs
+forall(h in Vt+Vs+1..Vt+Vs+Vo) sum(i in numeroNodi|i<>h) y(i,h)<=C              !max number of cable that can enter in substation      Vo
+
+
+!vincolo che elimina se ci sono intersezioni
+forall (i in I, j in J, kk in numeroNodi, z in numeroNodi2| i<>j and i<>kk and i<>z and j<>kk and j<>z and kk<>z) do
+if (doIntersect(Vx(i),Vy(i),Vx(j),Vy(j),Vx(kk),Vy(kk),Vx(z),Vy(z))) then
+y(i,j)+y(j,i)+y(kk,z)+y(kk,z) <=1 !nocross contraint
+end-if
+end-do
+
+
+forall (i in I, j in J, t in nbt) x(i,j,t) is_binary  !!asegnazione variabili a binarie
+forall (i in I, j in J) y(i,j) is_binary
+forall (i in I, j in J) f(i,j)>=0
+
+
+
+
+minimize(mincost) !minimizza la funzione
+
+writeln("cost ", getobjval)
+
+forall (i in I, j in J) do
+forall (t in nbt| getsol(x(i,j,t))>0) writeln("Xijt: ",i," ",j," ",t)
+end-do
+writeln("")
+writeln("Y")
+
+forall (i in I, j in J) do
+ if (getsol(y(i,j))>0) then writeln("Yij: ",i," ",j," ",getsol(y(i,j)))
+ end-if
+end-do
+
+writeln("")
+writeln("f")
+
+forall (i in I, j in J) do
+ if (getsol(y(i,j))>0) then writeln("Fij: ",i," ",j," ",getsol(f(i,j)))
+ end-if
+end-do
+
+end-model
